@@ -98,7 +98,7 @@ jobs:
           export EDITION=lite
           eval "$(./scripts/get_version.sh env)"
           LDFLAGS="-w -s $(./scripts/get_version.sh ldflags)"
-          export CGO_CFLAGS="-Wno-deprecated-declarations"
+          # export CGO_CFLAGS="-Wno-deprecated-declarations"
           if [ "${{ matrix.goos }}" = "darwin" ]; then
             export CGO_LDFLAGS="-Wl,-no_warn_duplicate_libraries"
           fi
@@ -177,6 +177,18 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+          
+      - name: Prepare SQLite headers
+        shell: pwsh
+        run: |
+          $sqliteModuleJson = go mod download -json github.com/mattn/go-sqlite3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sqliteModule = $sqliteModuleJson | ConvertFrom-Json
+          $includeDir = Join-Path $env:RUNNER_TEMP "sqlite-headers"
+          New-Item -ItemType Directory -Path $includeDir -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $sqliteModule.Dir "sqlite3-binding.h") -Destination (Join-Path $includeDir "sqlite3.h")
+          $includePath = $includeDir.Replace('\', '/')
+          ('CGO_CFLAGS="-I{0}" -Wno-deprecated-declarations' -f $includePath) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
@@ -207,7 +219,7 @@ jobs:
         shell: bash
         run: |
           export GOLANG_PROTOBUF_REGISTRATION_CONFLICT=warn
-          export CGO_CFLAGS="-Wno-deprecated-declarations"
+          # export CGO_CFLAGS="-Wno-deprecated-declarations"
           cd cmd/desktop
           go build -p 1 -buildvcs=false -tags "desktop,sqlite_fts5,production" -o _prebuild_tmp.exe . || true
           rm -f _prebuild_tmp.exe
@@ -219,7 +231,7 @@ jobs:
           export GOLANG_PROTOBUF_REGISTRATION_CONFLICT=warn
           eval "$(./scripts/get_version.sh env)"
           LDFLAGS="$(./scripts/get_version.sh ldflags) -X 'google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn'"
-          export CGO_CFLAGS="-Wno-deprecated-declarations"
+          # export CGO_CFLAGS="-Wno-deprecated-declarations"
 
           BUILD_TAGS="sqlite_fts5"
           NSIS_FLAG=""
