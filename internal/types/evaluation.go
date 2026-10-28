@@ -13,7 +13,8 @@ import (
 var Jieba *gojieba.Jieba = newJieba()
 
 func newJieba() *gojieba.Jieba {
-	dictDir := os.Getenv("JIEBA_DICT_DIR")
+	execPath, _ := os.Executable()
+	dictDir := resolveJiebaDictDir(execPath, os.Getenv("JIEBA_DICT_DIR"))
 	if dictDir == "" {
 		return gojieba.NewJieba()
 	}

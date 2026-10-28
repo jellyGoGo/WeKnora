@@ -91,6 +91,23 @@ Section
     !insertmacro wails.files
 
     ; Paths are relative to cmd/desktop/build/windows/installer.
+    IfFileExists "$INSTDIR\.env" desktop_env_ready
+    File /oname=.env "..\..\..\..\..\.env.lite.example"
+    desktop_env_ready:
+    SetOutPath "$INSTDIR\config"
+    File /r "..\..\..\..\..\config\*"
+    SetOutPath "$INSTDIR\migrations\sqlite"
+    File /r "..\..\..\..\..\migrations\sqlite\*"
+    SetOutPath "$INSTDIR\web"
+    File /r "..\..\..\..\..\web\*"
+    SetOutPath "$INSTDIR\dict"
+    File "..\..\..\..\..\dict\jieba.dict.utf8"
+    File "..\..\..\..\..\dict\hmm_model.utf8"
+    File "..\..\..\..\..\dict\user.dict.utf8"
+    File "..\..\..\..\..\dict\idf.utf8"
+    File "..\..\..\..\..\dict\stop_words.utf8"
+    SetOutPath $INSTDIR
+
     File "..\..\..\..\..\LICENSE"
     File "..\..\..\..\..\THIRD_PARTY_NOTICES.md"
     SetOutPath "$INSTDIR\licenses"

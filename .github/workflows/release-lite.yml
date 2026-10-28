@@ -23,7 +23,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # ── 1. Build frontend once, share as artifact (for Web CLI) ──
+  # ── 1. Build frontend once, share as artifact ──
   build-frontend:
     runs-on: ubuntu-latest
     steps:
@@ -137,6 +137,7 @@ jobs:
 
   # ── 2b. Build Desktop APP per platform (Wails) ──
   build-desktop-app:
+    needs: build-frontend
     strategy:
       fail-fast: false
       matrix:
@@ -177,7 +178,36 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-          
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: web/
+
+      - name: Prepare Windows runtime resources
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $jiebaModuleJson = go mod download -json github.com/yanyiwu/gojieba
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $jiebaModule = $jiebaModuleJson | ConvertFrom-Json
+          $dictSource = Join-Path $jiebaModule.Dir "deps/cppjieba/dict"
+          New-Item -ItemType Directory -Path dict -Force | Out-Null
+          foreach ($name in @('jieba.dict.utf8', 'hmm_model.utf8', 'user.dict.utf8', 'idf.utf8', 'stop_words.utf8')) {
+            Copy-Item -LiteralPath (Join-Path $dictSource $name) -Destination (Join-Path dict $name)
+          }
+          foreach ($path in @('web/index.html', 'config/config.yaml', 'migrations/sqlite', '.env.lite.example')) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Missing desktop runtime resource: $path" }
+          }
+
+      - name: Test desktop startup paths and proxy
+        shell: pwsh
+        run: |
+          go test ./internal/types/jieba_paths.go ./internal/types/jieba_paths_test.go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./cmd/desktop/paths.go ./cmd/desktop/paths_test.go ./cmd/desktop/startup.go ./cmd/desktop/startup_test.go ./cmd/desktop/proxy_test.go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Prepare SQLite headers
         shell: pwsh
         run: |
@@ -343,6 +373,11 @@ jobs:
           test -f "$INSTALLER"
           cp "$INSTALLER" "${ARCHIVE}_setup.exe"
           sha256sum "${ARCHIVE}_setup.exe" > "${ARCHIVE}_setup.exe.sha256"
+
+      - name: Smoke test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-windows-desktop.ps1 -InstallerPath "cmd/desktop/build/bin/WeKnora Lite-amd64-installer.exe"
 
       - uses: actions/upload-artifact@v7
         with:

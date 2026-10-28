@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -191,24 +191,15 @@ func ensureDesktopLiteEdition() {
 func main() {
 	ensureDesktopLiteEdition()
 
-	// For macOS .app bundle, the working directory is usually "/" or the MacOS folder.
-	// We need to change the working directory to the Resources folder where our configs are.
-	execPath, errPath := os.Executable()
-	// A packaged .app keeps config under Contents/Resources. wails dev also
-	// runs from a .app, but that bundle has no copied config; stay in the
-	// repo and use config/ there.
-	if errPath == nil && strings.Contains(execPath, ".app/Contents/MacOS") {
-		resPath := filepath.Join(filepath.Dir(filepath.Dir(execPath)), "Resources")
-		if _, err := os.Stat(filepath.Join(resPath, "config", "config.yaml")); err == nil {
-			_ = os.Chdir(resPath)
-		}
+	// Shortcuts and shell launches may start outside the installation folder.
+	// Keep resources relative to the executable, with bundle/dev fallbacks.
+	execPath, _ := os.Executable()
+	cwd, err := os.Getwd()
+	if err != nil {
+		panic(fmt.Sprintf("resolve desktop working directory: %v", err))
 	}
-	if _, err := os.Stat(filepath.Join("config", "config.yaml")); os.IsNotExist(err) {
-		// wails dev 的 cwd 是 cmd/desktop。仓库配置在上两级。
-		repoRoot := filepath.Clean(filepath.Join("..", ".."))
-		if _, err := os.Stat(filepath.Join(repoRoot, "config", "config.yaml")); err == nil {
-			_ = os.Chdir(repoRoot)
-		}
+	if err := os.Chdir(desktopResourceDir(execPath, cwd)); err != nil {
+		panic(fmt.Sprintf("open desktop resources: %v", err))
 	}
 
 	// Load .env explicitly for the desktop app so DB_DRIVER gets loaded
@@ -265,6 +256,7 @@ func main() {
 
 	// Error channel to capture server startup errors
 	serverErrCh := make(chan error, 1)
+	backendReady := make(chan struct{})
 
 	// Run backend in a separate goroutine
 	go func() {
@@ -297,6 +289,7 @@ func main() {
 					app.apiLanBaseURL = fmt.Sprintf("http://%s:%d/api/v1", ip.String(), port)
 				}
 			}
+			close(backendReady)
 
 			// Wails OnShutdown returns only after this goroutine closes
 			// serverStopped. Closing the listener by hand makes Serve return
@@ -346,8 +339,11 @@ func main() {
 		}
 	}()
 
-	// Give the server a moment to start and determine its port
-	time.Sleep(500 * time.Millisecond)
+	// Fresh installs can spend longer than 500 ms initializing the database.
+	// Synchronize the URL before the proxy captures it and the window opens.
+	if err := waitForDesktopBackend(backendReady, serverErrCh, 90*time.Second); err != nil {
+		logger.Fatalf(context.Background(), "Failed to start desktop backend: %v", err)
+	}
 
 	// Create application with options
 	// macOS app menu
@@ -399,7 +395,7 @@ func main() {
 
 	// Start Wails application
 	// We use a Reverse Proxy to seamlessly proxy Wails' frontend to our Go backend
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:         "WeKnora Lite",
 		Width:         1280,
 		Height:        800,
@@ -441,6 +437,16 @@ func main() {
 }
 
 func configureDesktopStorage(execPath string) {
+	if goruntime.GOOS == "windows" {
+		appDataDir, err := desktopPrefsDir()
+		if err == nil {
+			err = configureWindowsDesktopStorage(appDataDir)
+		}
+		if err != nil {
+			panic(fmt.Sprintf("initialize desktop storage: %v", err))
+		}
+		return
+	}
 	if execPath == "" || !strings.Contains(execPath, ".app/Contents/MacOS") {
 		return
 	}
@@ -555,38 +561,6 @@ func defaultMacAppSupportDir(execPath string) (string, error) {
 	}
 
 	return filepath.Join(homeDir, "Library", "Application Support", appName), nil
-}
-
-func resolveDesktopDataPath(rawPath, defaultRelativePath, appSupportDir string) string {
-	trimmed := strings.TrimSpace(rawPath)
-	if trimmed == "" {
-		trimmed = defaultRelativePath
-	}
-	if filepath.IsAbs(trimmed) {
-		return filepath.Clean(trimmed)
-	}
-	trimmed = strings.TrimPrefix(trimmed, "."+string(filepath.Separator))
-	return filepath.Join(appSupportDir, filepath.Clean(trimmed))
-}
-
-// desktopAPIProxy forwards the webview to the loopback Gin server. Pairing
-// needs the API listener as Host so the link cannot be aimed at another
-// machine. Other routes keep the page Host (wails.localhost), which OIDC
-// callbacks and embed origin checks still compare against.
-func desktopAPIProxy(target *url.URL) *httputil.ReverseProxy {
-	return &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(target)
-			r.SetXForwarded()
-			if !isBrowserPairingRequest(r.In) {
-				r.Out.Host = r.In.Host
-			}
-		},
-	}
-}
-
-func isBrowserPairingRequest(req *http.Request) bool {
-	return req != nil && req.URL != nil && req.Method == http.MethodPost && req.URL.Path == "/api/v1/me/browser"
 }
 
 // desktopBackendListenAddr returns the TCP address for the embedded Gin server (Wails desktop).
